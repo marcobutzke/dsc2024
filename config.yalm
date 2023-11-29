@@ -1,0 +1,17 @@
+credentials:
+  usernames:
+    brasil:
+      email: marcobutzke@gmail.com
+      name: Estados do Brasil
+      password: $2b$12$AiKDYWoLreeks4EJHXb9AuarCgr5ErRwklHf.tWMjDobd9i5B.eg2
+    europa:
+      email: marco@unidavi.edu.br
+      name: Vendas na Europa
+      password: $2b$12$rPxd/rtl.lMtIMcHQwJvduXd/.ZW0TztkJpQ6BEyUxDHzrsOjGDsW
+cookie:
+  expiry_days: 30
+  key: 'teste'
+  name: italy
+preauthorized:
+  emails:
+  - marcobutzke@gmail.com
