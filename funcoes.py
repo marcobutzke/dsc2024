@@ -16,6 +16,18 @@ def cor_regiao(s):
     elif s['Região'] == 'Sul':
         return ['background-color: lightgreen']*len(s)
 
+def cor_cluster(s):
+    if s['Cluster'] == 0:
+        return ['background-color: beige']*len(s)
+    elif s['Cluster'] == 1:
+        return ['background-color: gray']*len(s)
+    elif s['Cluster'] == 2:
+        return ['background-color: lightgray']*len(s)
+    elif s['Cluster'] == 3:
+        return ['background-color: lightblue']*len(s)
+    elif s['Cluster'] == 4:
+        return ['background-color: lightgreen']*len(s)
+
 def cor_classe(s):
     if s.outlier_max == 1:
         return ['background-color: #636efa']*len(s)

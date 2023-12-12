@@ -11,6 +11,11 @@ import altair as alt
 import folium
 import yaml
 from yaml.loader import SafeLoader
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from pyod.models.knn import KNN
+from sklearn.preprocessing import StandardScaler
+from sklearn.neighbors import NearestNeighbors
 
 st.set_page_config(layout="wide")
 style_metric_cards(
@@ -23,7 +28,7 @@ style_metric_cards(
 )
 
 from funcoes import classificacao_estados_variavel, classificacao_abc_variavel, \
-    cor_classe, cor_regiao, cor_abc, analise_variancia
+    cor_classe, cor_regiao, cor_abc, analise_variancia, cor_cluster
 
 @st.cache_data
 def load_database_brasil(vars):
@@ -204,14 +209,13 @@ if st.session_state["authentication_status"]:
                 else:
                     col1.dataframe(regioes_diferentes[regioes_diferentes['diferenca'] == 1], hide_index=True)
                 col2.plotly_chart(px.box(estados, x="Região", y=variavel))
-
         with conhecimento:
             cenario_vars = st.multiselect('Selecione o Cenário: ', variaveis)
             if len(cenario_vars) > 1:
                 if st.toggle('Calcular Modelos'):
-                    rnk, cls, emd, rlg, anm, vmp = st.tabs(
+                    rnk, cls, emd, anm, vmp = st.tabs(
                         ['Ranking (classificação)', 'Grupo (Clusters)', 'Escalonamento Multidimensional',
-                         'Região (Probabilidades)', 'Detecção de Anomalias', 'Associação']
+                         'Detecção de Anomalias', 'Associação']
                     )
                     with rnk:
                         ranking = padrao[['Estado', 'Sigla', 'Região'] + cenario_vars]
@@ -250,7 +254,90 @@ if st.session_state["authentication_status"]:
                             mapa_px.update_layout(margin={'r':0,'t':0,'l':0, 'b':0})
                             mapa_px.update_traces(marker_line_width=1)
                             c2.plotly_chart(mapa_px)
-
+                    with cls:
+                        kmeans = KMeans(n_clusters=5, random_state=0, n_init='auto').fit(estados[cenario_vars])
+                        estados_cls = estados[['Estado', 'Sigla', 'Região'] + cenario_vars]
+                        estados_cls['Cluster'] = kmeans.labels_
+                        st.dataframe(estados_cls.pivot_table(
+                            index='Cluster', values=cenario_vars, aggfunc='mean'
+                        ).reset_index().style.apply(cor_cluster, axis=1), hide_index=True, use_container_width=True)
+                        tabl, mapa = st.tabs(['Tabela', 'Mapas'])
+                        with tabl:
+                            st.dataframe(estados_cls.sort_values(by='Cluster').style.apply(cor_cluster, axis=1),
+                                hide_index=True, height=1000, use_container_width=True
+                            )
+                        with mapa:
+                            clusters_cores = {0:'beige', 1:'gray', 2:'lightgray', 3:'lightblue', 4:'lightgreen'}
+                            mapa_px = px.choropleth_mapbox(
+                                data_frame = estados_cls, geojson = geo_data, locations='Sigla',
+                                featureidkey='properties.sigla', color='Cluster',
+                                color_discrete_map=clusters_cores, mapbox_style='carto-positron', zoom=2.5,
+                                center = {"lat": -15.76, "lon": -47.88},
+                                opacity=1, width = 640, height = 480,
+                            )
+                            mapa_px.update_layout(margin={'r':0,'t':0,'l':0, 'b':0})
+                            mapa_px.update_traces(marker_line_width=1)
+                            st.plotly_chart(mapa_px)
+                    with emd:
+                        pca = PCA(n_components=2).fit(estados[cenario_vars]).transform(estados[cenario_vars])
+                        estados_emd = estados[['Estado', 'Sigla', 'Região'] + cenario_vars].copy()
+                        estados_emd['escalaX'] = pca[:, 0]
+                        estados_emd['escalaY'] = pca[:, 1]
+                        kmeans = KMeans(n_clusters=5, random_state=0, n_init='auto').fit(estados[cenario_vars])
+                        estados_emd['Cluster'] = kmeans.labels_
+                        st.dataframe(estados_emd.pivot_table(
+                            index='Cluster', values=cenario_vars, aggfunc='mean'
+                        ).reset_index(), hide_index=True, use_container_width=True)
+                        ed = alt.Chart(estados_emd).mark_circle(size=100).encode(
+                            alt.X('escalaX', scale=alt.Scale(zero=False)),
+                            alt.Y('escalaY', scale=alt.Scale(zero=False, padding=1)),
+                            color='Cluster:N',
+                        ).encode(tooltip=['Estado', 'Sigla']).properties(width=1200, height=800)
+                        tx = alt.Chart(estados_emd).mark_text(dy=-10).encode(
+                            alt.X('escalaX', scale=alt.Scale(zero=False)),
+                            alt.Y('escalaY', scale=alt.Scale(zero=False, padding=1)),
+                            text = 'Estado'
+                        ).encode(tooltip=['Estado', 'Sigla']).properties(width=1200, height=800)
+                        st.altair_chart(ed + tx)
+                    with anm:
+                        clf = KNN().fit(StandardScaler().fit_transform(estados[cenario_vars]))
+                        estados_anm = estados[['Estado', 'Sigla', 'Região'] + cenario_vars].copy()
+                        estados_anm['Outlier'] = clf.predict(StandardScaler().fit_transform(estados[cenario_vars]))
+                        st.dataframe(estados_anm[estados_anm['Outlier'] == 1],
+                                     hide_index=True, use_container_width=True)
+                        outliers_cores = {0:'white', 1:'blue'}
+                        mapa_px = px.choropleth_mapbox(
+                            data_frame = estados_anm, geojson = geo_data, locations='Sigla',
+                            featureidkey='properties.sigla', color='Outlier',
+                            color_discrete_map=outliers_cores, mapbox_style='carto-positron', zoom=2.5,
+                            center = {"lat": -15.76, "lon": -47.88},
+                            opacity=1, width = 640, height = 480,
+                        )
+                        mapa_px.update_layout(margin={'r':0,'t':0,'l':0, 'b':0})
+                        mapa_px.update_traces(marker_line_width=1)
+                        st.plotly_chart(mapa_px)
+                    with vmp:
+                        estado = st.selectbox('Selecione o Estado:', estados['Estado'])
+                        estado_vmp = estados[estados['Estado'] == estado][cenario_vars]
+                        estados_vmp = estados[cenario_vars]
+                        neighbors_alg = NearestNeighbors(n_neighbors=min(6, len(estados_vmp))).fit(estados_vmp)
+                        similar = neighbors_alg.kneighbors(estado_vmp, return_distance=False)[0]
+                        estados_similares = list(estados.iloc[similar]['Sigla'])
+                        estados_knn = estados[['Estado', 'Sigla', 'Região'] + cenario_vars].copy()
+                        estados_knn['Similar'] = estados_knn.apply(lambda x : 1 if x['Sigla'] in estados_similares else 0, axis=1)
+                        st.dataframe(estados_knn[estados_knn['Similar'] == 1],
+                                     hide_index=True, use_container_width=True)
+                        similar_cores = {0:'white', 1:'blue'}
+                        mapa_px = px.choropleth_mapbox(
+                            data_frame = estados_knn, geojson = geo_data, locations='Sigla',
+                            featureidkey='properties.sigla', color='Similar',
+                            color_discrete_map=similar_cores, mapbox_style='carto-positron', zoom=2.5,
+                            center = {"lat": -15.76, "lon": -47.88},
+                            opacity=1, width = 640, height = 480,
+                        )
+                        mapa_px.update_layout(margin={'r':0,'t':0,'l':0, 'b':0})
+                        mapa_px.update_traces(marker_line_width=1)
+                        st.plotly_chart(mapa_px)
 
     if st.session_state["name"] == 'Vendas na Europa':
         europa = load_database_europa()
