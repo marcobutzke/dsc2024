@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 import json
+import yaml
+from yaml.loader import SafeLoader
 import streamlit as st
 import streamlit_authenticator as stauth
 from streamlit_extras.metric_cards import style_metric_cards
@@ -9,13 +11,17 @@ import plotly.graph_objects as go
 from streamlit_folium import folium_static
 import altair as alt
 import folium
-import yaml
-from yaml.loader import SafeLoader
+from folium.plugins import MarkerCluster
+import branca.colormap as cm
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from pyod.models.knn import KNN
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import NearestNeighbors
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestRegressor
+from prophet import Prophet
+
 
 st.set_page_config(layout="wide")
 style_metric_cards(
@@ -32,7 +38,7 @@ from funcoes import classificacao_estados_variavel, classificacao_abc_variavel, 
 
 @st.cache_data
 def load_database_brasil(vars):
-    bra = pd.read_excel('brasil_estados.xlsx')
+    bra = pd.read_parquet('brasil_estados.parquet')
     pad = bra[['Estado', 'Sigla', 'Região']].copy()
     for var in vars:
         variavel_media = bra[var].mean()
@@ -43,7 +49,11 @@ def load_database_brasil(vars):
 
 @st.cache_data
 def load_database_europa():
-    return pd.read_parquet('SSEuropa.parquet')
+    europe = pd.read_parquet('SSEuropa.parquet')
+    europe['Year'] = europe['Order Date'].dt.year
+    europe['Month'] = europe['Order Date'].dt.month
+    europe['Order Date Month'] = europe['Order Date'].apply(lambda x : x.strftime("%Y-%m-01"))
+    return europe
 
 with open('config.yalm') as file:
     config = yaml.load(file, Loader=SafeLoader)
@@ -341,8 +351,167 @@ if st.session_state["authentication_status"]:
 
     if st.session_state["name"] == 'Vendas na Europa':
         europa = load_database_europa()
-        st.dataframe(europa)
-
+        ped, seg, luc, prv, prj = st.tabs(
+            [
+                'Localização dos Pedidos',
+                'Segmentos do Mercado',
+                'Lucratividade por Localização',
+                'Previsão de Lucro por Produto',
+                'Projeção de Vendas/Lucro'
+            ]
+        )
+        with ped:
+            c1, c2, c3, c4 = st.columns([2,2,1,1])
+            linhas = c1.multiselect(
+                'Linha(s):', ['Country', 'State/Province', 'City', 'Sub-Category', 'Product', 'Trademark']
+            )
+            colunas = c2.multiselect(
+                'Coluna(s):', ['Year', 'Month', 'Category', 'Segment', 'Region']
+            )
+            valores = c3.selectbox('Valor:', ['Sales', 'Profit', 'Quantity'])
+            agregador = c4.selectbox('Função:', ['sum', 'mean', 'count', 'min', 'max'])
+            if len(linhas) > 0 or len(colunas)> 0:
+                st.dataframe(
+                    europa.pivot_table(
+                        index=linhas, columns=colunas, values=valores, aggfunc=agregador, fill_value=0
+                    ), use_container_width=True
+                )
+            if st.toggle('Mapa'):
+                europa_cid = europa.groupby(['City', 'Lat', 'Lng'])[
+                    ['Sales','Profit','Quantity']
+                ].sum().reset_index()
+                euromapc = folium.Map(location=[europa_cid['Lat'].mean(), europa_cid['Lng'].mean()],
+                                      tiles='cartodbpositron', zoom_start=4,
+                                      width=800, height=600)
+                mapc = MarkerCluster()
+                for idx, row in europa_cid.iterrows():
+                    mapc.add_child(folium.Marker([row['Lat'], row['Lng']],popup=row['City']))
+                euromapc.add_child(mapc)
+                folium_static(euromapc)
+        with seg:
+            segmento = st.selectbox('Segmento: ', europa['Segment'].unique())
+            europa_seg = europa[europa['Segment'] == segmento].groupby(
+                ['Region', 'Country', 'State/Province', 'City', 'Lat', 'Lng']
+            )[['Sales','Profit','Quantity']].sum().reset_index()
+            media = europa_seg['Sales'].mean()
+            dp = europa_seg['Sales'].std()
+            europa_seg['Rateio'] = europa_seg['Sales'].apply(lambda x : int((x - media) / dp) + 3)
+            mapseg = folium.Map(location=[europa_seg['Lat'].mean(), europa_seg['Lng'].mean()],
+                                tiles='cartodbpositron', zoom_start=4,
+                                width=800, height=600)
+            region_cores = {'South': 'red', 'North': 'blue', 'Central':'green'}
+            for idx, row in europa_seg.iterrows():
+                mapseg.add_child(folium.CircleMarker(
+                    [row['Lat'], row['Lng']],
+                    popup='Country: {0} State/Province: {1} - City: {2}'.format(
+                        row['Country'],row['State/Province'],row['City']),
+                    radius=row['Rateio'], color=region_cores[row['Region']]
+                    )
+                )
+            folium_static(mapseg)
+        with luc:
+            europa_prb = europa.groupby(
+                ['Region', 'Country', 'State/Province', 'City', 'Lat', 'Lng']
+            )[['Sales','Profit','Quantity']].mean()
+            media = europa_prb['Profit'].mean()
+            europa_prb['Esperado'] = europa_prb['Profit'].apply(lambda x : 1 if x > media else 0)
+            X_Train = europa_prb.drop(columns=['Esperado'], axis=1)
+            X_Test = europa_prb.drop(columns=['Esperado'], axis=1)
+            y_Train = europa_prb['Esperado']
+            y_Test = europa_prb['Esperado']
+            sc_x = StandardScaler()
+            X_Train = sc_x.fit_transform(X_Train)
+            X_Test = sc_x.fit_transform(X_Test)
+            logreg = LogisticRegression(solver="lbfgs", max_iter=500)
+            logreg.fit(X_Train, y_Train)
+            pred_logreg = logreg.predict(X_Test)
+            europa_prb['Previsao'] = pred_logreg
+            pred_proba = logreg.predict_proba(X_Test)
+            lista_proba = pred_proba.tolist()
+            lista_proba = pd.DataFrame(
+                lista_proba, columns = ['Prob_prejuizo', 'Prob_lucro']
+            )
+            europa_prb = europa_prb.reset_index()
+            europa_prb = pd.merge(europa_prb, lista_proba, left_index=True, right_index=True)
+            linear = cm.LinearColormap(["red", "yellow", "green"],
+                                       vmin=europa_prb['Prob_lucro'].min(),
+                                       vmax=europa_prb['Prob_lucro'].max())
+            mapprb = folium.Map(
+                [europa_prb['Lat'].mean(), europa_prb['Lng'].mean()],
+                tiles="cartodbpositron", zoom_start=4,
+                width=800, height=600)
+            for index, row in europa_prb.iterrows():
+                folium.CircleMarker([row['Lat'], row['Lng']],
+                                  popup='Probabilidade Esperada de Lucro acima da média: {0}'.format(
+                                      round(row['Prob_lucro'],4)),
+                                  radius=3,
+                                  color = linear(row['Prob_lucro']),
+                                  ).add_to(mapprb)
+            c1, c2 = st.columns([1,2])
+            c1.dataframe(europa_prb.groupby('Country')['Prob_lucro'].mean().reset_index().sort_values(
+                by='Prob_lucro', ascending=False
+            ), hide_index=True, use_container_width=True, height=600)
+            with c2:
+                folium_static(mapprb)
+        with prv:
+            regressao = europa.groupby(['Category','Sub-Category','Product'])[['Profit']].mean().reset_index()
+            regressao = regressao.merge(
+            europa.pivot_table(
+                index=['Category','Sub-Category','Product'], columns='Segment', values='Sales', aggfunc='sum', fill_value=0).reset_index(),
+                                         on=['Category','Sub-Category','Product'], how='left')
+            regressao = regressao.merge(
+            europa.pivot_table(
+                index=['Category','Sub-Category','Product'], columns='Region', values='Sales', aggfunc='sum', fill_value=0).reset_index(),
+                                         on=['Category','Sub-Category','Product'], how='left')
+            regr = regressao[['Profit','Consumer','Corporate','Home Office', 'Central', 'North', 'South']]
+            X_Train = regr.drop(columns=['Profit'], axis=1)
+            X_Test = regr.drop(columns=['Profit'], axis=1)
+            y_Train = regr['Profit']
+            y_Test = regr['Profit']
+            rf = RandomForestRegressor(n_estimators = 1000, random_state = 42)
+            rf.fit(X_Train, y_Train)
+            regressao['Esperado'] = rf.predict(X_Test)
+            regressao['Diferenca'] = regressao['Profit'] - regressao['Esperado']
+            c1, c2 = st.columns(2)
+            c1.metric('Valor Médio Lucro Obtido', round(regressao['Profit'].mean(),2))
+            c1.dataframe(
+                regressao.groupby('Category')[['Profit','Esperado','Diferenca']].mean().reset_index().sort_values(
+                    by='Diferenca', ascending=False
+                ),
+                hide_index=True, use_container_width=True)
+            c1.dataframe(
+                regressao.groupby(
+                    ['Category', 'Sub-Category'])[['Profit','Esperado','Diferenca']].mean().reset_index().sort_values(
+                    by='Diferenca', ascending=False
+                ),
+                hide_index=True, use_container_width=True, height=640)
+            c2.metric('Valor Médio Lucro Esperado', round(regressao['Esperado'].mean(),2))
+            c2.dataframe(
+                regressao[
+                    ['Category','Sub-Category','Product','Profit','Esperado','Diferenca']].sort_values(
+                    by='Diferenca', ascending=False
+                ),
+                hide_index=True, use_container_width=True, height=1200)
+        with prj:
+            europa_sls = europa.groupby('Order Date Month')[['Sales']].sum().reset_index()
+            europa_sls = europa_sls.rename(columns={'Order Date Month': 'ds', 'Sales': 'y'})
+            euromdl = Prophet().fit(europa_sls)
+            future = euromdl.make_future_dataframe(periods=12, freq='MS')
+            forecast = euromdl.predict(future)
+            c1, c2 = st.columns(2)
+            c1.header('Vendas')
+            c1.pyplot(euromdl.plot(forecast))
+            c1.dataframe(forecast.tail(12)[['ds', 'yhat', 'yhat_lower', 'yhat_upper']],
+                         hide_index=True, use_container_width=True, height=480)
+            europa_prf = europa.groupby('Order Date Month')[['Profit']].sum().reset_index()
+            europa_prf = europa_prf.rename(columns={'Order Date Month': 'ds', 'Profit': 'y'})
+            euromdl = Prophet().fit(europa_prf)
+            future = euromdl.make_future_dataframe(periods=12, freq='MS')
+            forecast = euromdl.predict(future)
+            c2.header('Lucro')
+            c2.pyplot(euromdl.plot(forecast))
+            c2.dataframe(forecast.tail(12)[['ds', 'yhat', 'yhat_lower', 'yhat_upper']],
+                         hide_index=True, use_container_width=True, height=480)
 elif st.session_state["authentication_status"] is False:
     st.error('Username/password is incorrect')
 elif st.session_state["authentication_status"] is None:
