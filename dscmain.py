@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import json
 import streamlit as st
-import streamlit_authenticator as stauth
 from streamlit_extras.metric_cards import style_metric_cards
 import plotly.express as px
 import plotly.graph_objects as go
