@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import json
 import streamlit as st
-from streamlit_extras.metric_cards import style_metric_cards
 import plotly.express as px
 import plotly.graph_objects as go
 from streamlit_folium import folium_static
@@ -20,14 +19,6 @@ from sklearn.ensemble import RandomForestRegressor
 from prophet import Prophet
 
 st.set_page_config(layout="wide")
-style_metric_cards(
-    border_left_color="#3D5077",
-    background_color="#F0F2F6",
-    border_size_px=3,
-    border_color = "#CECED0",
-    border_radius_px = 10,
-    box_shadow=True
-)
 
 from funcoes import classificacao_estados_variavel, classificacao_abc_variavel, \
     cor_classe, cor_regiao, cor_abc, analise_variancia, cor_cluster
